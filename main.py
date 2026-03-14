@@ -7,6 +7,7 @@ Output: Structured CRM fields extracted from the documents
 
 import os
 import json
+import hashlib
 import logging
 import re
 import threading
@@ -223,6 +224,40 @@ def solve(payload: dict):
         logger.error("Solve called without any documents in payload")
         raise HTTPException(status_code=400, detail="Payload must include documents")
 
+    cache_documents = []
+    for document in documents:
+        cache_documents.append(
+            {
+                "filename": document.get("filename"),
+                "pdf_url": document.get("pdf_url"),
+                "ocr_text": document.get("ocr_text"),
+            }
+        )
+
+    cache_payload = json.dumps(
+        cache_documents,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    cache_key = "challenge2:v1:" + hashlib.sha256(
+        cache_payload.encode("utf-8")
+    ).hexdigest()
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM cache WHERE key = %s", (cache_key,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if row is not None:
+            logger.info("Cache hit for %s", cache_key)
+            return row[0]
+        logger.info("Cache miss for %s", cache_key)
+    except Exception:
+        logger.exception("Cache read failed for %s", cache_key)
+
     def detect_endorsement_number(document: dict):
         patterns = [
             r"dodatek\s*(?:č\.?|cislo|číslo|c\.?)?\s*(\d+)",
@@ -398,6 +433,24 @@ Document bundle:
         raise HTTPException(status_code=502, detail="Gemini returned incomplete premium object")
 
     parsed["latestEndorsementNumber"] = latest_endorsement_number
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO cache (key, value)
+            VALUES (%s, %s::jsonb)
+            ON CONFLICT (key) DO UPDATE
+            SET value = EXCLUDED.value
+            """,
+            (cache_key, json.dumps(parsed, ensure_ascii=False)),
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+    except Exception:
+        logger.exception("Cache write failed for %s", cache_key)
+
     return parsed
 
 
