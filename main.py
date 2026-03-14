@@ -6,15 +6,21 @@ Output: Structured CRM fields extracted from the documents
 """
 
 import os
+import json
+import logging
+import re
 import threading
 import time
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import psycopg2
 from fastapi import FastAPI
+from fastapi import HTTPException
 import uvicorn
 
 app = FastAPI(title="Challenge 2: Document Data Extraction")
+logger = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ.get(
     "DATABASE_URL", "postgresql://hackathon:hackathon@localhost:5432/hackathon"
@@ -25,11 +31,13 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 class GeminiTracker:
     """Wrapper around Gemini that tracks token usage."""
 
-    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-flash"):
         self.enabled = bool(api_key)
         if self.enabled:
-            genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel(model_name)
+            self.client = genai.Client(api_key=api_key)
+        else:
+            self.client = None
+        self.model_name = model_name
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
@@ -39,14 +47,55 @@ class GeminiTracker:
     def generate(self, prompt, **kwargs):
         if not self.enabled:
             raise RuntimeError("Gemini API key not configured")
-        response = self.model.generate_content(prompt, **kwargs)
+
+        config = {}
+        generation_config = kwargs.pop("generation_config", None) or {}
+        direct_config = kwargs.pop("config", None)
+        if isinstance(generation_config, dict):
+            config.update(generation_config)
+        if isinstance(direct_config, dict):
+            config.update(direct_config)
+        elif direct_config is not None:
+            config = direct_config
+
+        response = self.client.models.generate_content(
+            model=self.model_name,
+            contents=prompt,
+            config=config or None,
+        )
         with self._lock:
             self.request_count += 1
             meta = getattr(response, "usage_metadata", None)
+            if meta is None and hasattr(response, "model_dump"):
+                dumped = response.model_dump()
+                meta = dumped.get("usage_metadata") or dumped.get("usageMetadata")
             if meta:
-                self.prompt_tokens += getattr(meta, "prompt_token_count", 0)
-                self.completion_tokens += getattr(meta, "candidates_token_count", 0)
-                self.total_tokens += getattr(meta, "total_token_count", 0)
+                def _meta_get(obj, *names):
+                    if obj is None:
+                        return 0
+                    for name in names:
+                        if isinstance(obj, dict) and name in obj:
+                            return obj.get(name) or 0
+                        value = getattr(obj, name, None)
+                        if value is not None:
+                            return value
+                    return 0
+
+                self.prompt_tokens += _meta_get(
+                    meta, "prompt_token_count", "promptTokenCount"
+                )
+                self.completion_tokens += (
+                    _meta_get(
+                        meta,
+                        "candidates_token_count",
+                        "candidatesTokenCount",
+                        "response_token_count",
+                        "responseTokenCount",
+                    )
+                )
+                self.total_tokens += _meta_get(
+                    meta, "total_token_count", "totalTokenCount"
+                )
         return response
 
     def get_metrics(self):
@@ -170,31 +219,185 @@ def solve(payload: dict):
     # 5. For latestEndorsementNumber: find the highest amendment number
 
     documents = payload.get("documents", [])
+    if not documents:
+        logger.error("Solve called without any documents in payload")
+        raise HTTPException(status_code=400, detail="Payload must include documents")
 
-    result = {
-        "contractNumber": None,
-        "insurerName": None,
-        "state": "accepted",
-        "assetType": "other",
-        "concludedAs": "broker",
-        "contractRegime": "individual",
-        "startAt": None,
-        "endAt": None,
-        "concludedAt": None,
-        "installmentNumberPerInsurancePeriod": 1,
-        "insurancePeriodMonths": 12,
-        "premium": {
-            "currency": "czk",
-            "isCollection": False,
+    def detect_endorsement_number(document: dict):
+        patterns = [
+            r"dodatek\s*(?:č\.?|cislo|číslo|c\.?)?\s*(\d+)",
+            r"endorsement\s*(?:no\.?|number)?\s*(\d+)",
+        ]
+        haystacks = [
+            document.get("filename") or "",
+            document.get("ocr_text") or "",
+        ]
+        for text in haystacks:
+            lowered = text.lower()
+            for pattern in patterns:
+                match = re.search(pattern, lowered, re.IGNORECASE)
+                if match:
+                    return match.group(1)
+        return None
+
+    def build_nullable_schema(base_type: str):
+        return {"type": [base_type, "null"]}
+
+    def build_nullable_enum(values):
+        return {"type": ["string", "null"], "enum": values + [None]}
+
+    structured_documents = []
+    endorsement_numbers = []
+    for index, document in enumerate(documents, start=1):
+        endorsement_number = detect_endorsement_number(document)
+        if endorsement_number is not None:
+            endorsement_numbers.append(int(endorsement_number))
+        structured_documents.append(
+            {
+                "index": index,
+                "filename": document.get("filename"),
+                "pdf_url": document.get("pdf_url"),
+                "endorsementNumber": endorsement_number,
+                "ocrText": document.get("ocr_text") or "",
+            }
+        )
+
+    latest_endorsement_number = (
+        str(max(endorsement_numbers)) if endorsement_numbers else None
+    )
+    expected_keys = [
+        "contractNumber",
+        "insurerName",
+        "state",
+        "assetType",
+        "concludedAs",
+        "contractRegime",
+        "startAt",
+        "endAt",
+        "concludedAt",
+        "installmentNumberPerInsurancePeriod",
+        "insurancePeriodMonths",
+        "premium",
+        "actionOnInsurancePeriodTermination",
+        "noticePeriod",
+        "regPlate",
+        "latestEndorsementNumber",
+        "note",
+        "annualPremiumTotal",
+        "liabilityLimitHealth",
+        "liabilityLimitProperty",
+        "insuranceScope",
+    ]
+
+    response_schema = {
+        "type": "object",
+        "required": expected_keys,
+        "properties": {
+            "contractNumber": build_nullable_schema("string"),
+            "insurerName": build_nullable_schema("string"),
+            "state": {"type": "string", "enum": ["draft", "accepted", "cancelled"]},
+            "assetType": {"type": "string", "enum": ["other", "vehicle"]},
+            "concludedAs": {"type": "string", "enum": ["agent", "broker"]},
+            "contractRegime": {
+                "type": "string",
+                "enum": ["individual", "frame", "fleet", "coinsurance"],
+            },
+            "startAt": build_nullable_schema("string"),
+            "endAt": build_nullable_schema("string"),
+            "concludedAt": build_nullable_schema("string"),
+            "installmentNumberPerInsurancePeriod": build_nullable_schema("integer"),
+            "insurancePeriodMonths": build_nullable_schema("integer"),
+            "premium": {
+                "type": "object",
+                "required": ["currency", "isCollection"],
+                "properties": {
+                    "currency": build_nullable_schema("string"),
+                    "isCollection": {"type": "boolean"},
+                },
+            },
+            "actionOnInsurancePeriodTermination": build_nullable_enum(
+                ["auto-renewal", "policy-termination"]
+            ),
+            "noticePeriod": build_nullable_schema("string"),
+            "regPlate": build_nullable_schema("string"),
+            "latestEndorsementNumber": build_nullable_schema("string"),
+            "note": build_nullable_schema("string"),
+            "annualPremiumTotal": build_nullable_schema("integer"),
+            "liabilityLimitHealth": build_nullable_schema("integer"),
+            "liabilityLimitProperty": build_nullable_schema("integer"),
+            "insuranceScope": build_nullable_schema("string"),
         },
-        "actionOnInsurancePeriodTermination": "auto-renewal",
-        "noticePeriod": None,
-        "regPlate": None,
-        "latestEndorsementNumber": None,
-        "note": None,
     }
 
-    return result
+    prompt = f"""
+You extract structured CRM data from OCR text of Czech insurance contracts.
+
+Business rules:
+- Process all documents together as one contract file.
+- A main contract may be followed by zero or more amendments/addenda.
+- Amendments override earlier values from the main contract or earlier amendments.
+- Prefer the value from the highest-numbered amendment when multiple amendments change the same field.
+- Return null when a nullable value is not explicitly supported by the documents.
+- "doba neurčitá" means endAt must be null.
+- Dates must use DD.MM.YYYY exactly.
+- premium.currency must be lowercase ISO-style like czk or eur.
+- noticePeriod must be a lowercase hyphenated duration string, not natural language, eg. "six-weeks", .
+- Examples for noticePeriod: "six-weeks", "two-months", "one-month", "eight-weeks".
+- Use only the allowed enum values from the schema.
+- latestEndorsementNumber should reflect the highest amendment number present in the documents; return null if there is no amendment.
+- For Renomia-style contracts, if the document supports the broker interpretation, use concludedAs="broker".
+- Do not invent values.
+
+Document bundle:
+{json.dumps(structured_documents, ensure_ascii=False)}
+""".strip()
+
+    try:
+        response = gemini.generate(
+            prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                response_mime_type="application/json",
+                response_json_schema=response_schema,
+            ),
+        )
+    except Exception:
+        logger.exception("Gemini extraction request failed")
+        raise HTTPException(status_code=502, detail="Gemini extraction failed")
+
+    try:
+        parsed = getattr(response, "parsed", None)
+        if parsed is None:
+            parsed = json.loads(response.text)
+    except Exception:
+        logger.exception("Failed to parse Gemini structured output: %r", getattr(response, "text", None))
+        raise HTTPException(status_code=502, detail="Gemini returned invalid structured output")
+
+    if not isinstance(parsed, dict):
+        logger.error("Gemini structured output is not an object: %r", parsed)
+        raise HTTPException(status_code=502, detail="Gemini returned non-object structured output")
+
+    missing_keys = [key for key in expected_keys if key not in parsed]
+    if missing_keys:
+        logger.error("Gemini structured output is missing keys: %s; payload=%r", missing_keys, parsed)
+        raise HTTPException(status_code=502, detail="Gemini returned incomplete structured output")
+
+    premium = parsed.get("premium")
+    if not isinstance(premium, dict):
+        logger.error("Gemini structured output has invalid premium object: %r", premium)
+        raise HTTPException(status_code=502, detail="Gemini returned invalid premium object")
+
+    missing_premium_keys = [key for key in ("currency", "isCollection") if key not in premium]
+    if missing_premium_keys:
+        logger.error(
+            "Gemini structured output is missing premium keys: %s; premium=%r",
+            missing_premium_keys,
+            premium,
+        )
+        raise HTTPException(status_code=502, detail="Gemini returned incomplete premium object")
+
+    parsed["latestEndorsementNumber"] = latest_endorsement_number
+    return parsed
 
 
 if __name__ == "__main__":
