@@ -224,6 +224,19 @@ def solve(payload: dict):
         logger.error("Solve called without any documents in payload")
         raise HTTPException(status_code=400, detail="Payload must include documents")
 
+    if not getattr(solve, "_cache_cleared_after_start", False):
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("DELETE FROM cache")
+            conn.commit()
+            cur.close()
+            conn.close()
+            solve._cache_cleared_after_start = True
+            logger.info("Cleared cache table on first solve after startup")
+        except Exception:
+            logger.exception("Failed to clear cache table on first solve after startup")
+
     cache_documents = []
     for document in documents:
         cache_documents.append(
