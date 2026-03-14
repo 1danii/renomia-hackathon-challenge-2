@@ -341,7 +341,8 @@ Business rules:
 - "doba neurčitá" means endAt must be null.
 - Dates must use DD.MM.YYYY exactly.
 - premium.currency must be lowercase ISO-style like czk or eur.
-- noticePeriod must be a lowercase hyphenated duration string, not natural language, eg. "six-weeks", .
+- premium.isCollection is true only if the documents explicitly state the broker collects the premium; otherwise return false.
+- noticePeriod must be a lowercase hyphenated duration string, not natural language.
 - Examples for noticePeriod: "six-weeks", "two-months", "one-month", "eight-weeks".
 - Use only the allowed enum values from the schema.
 - latestEndorsementNumber should reflect the highest amendment number present in the documents; return null if there is no amendment.
