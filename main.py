@@ -389,6 +389,7 @@ Business rules:
 - "doba neurčitá" means endAt must be null.
 - If OCR clearly refers to vehicle insurance, for example `pojištění vozidel`, `vozidlo`, `VIN`, `registrační značka`, or `osobní automobil`, set assetType to `vehicle`.
 - If the contract is `na dobu neurčitou` and there is no explicit wording that the policy terminates at the end of the insurance period, set actionOnInsurancePeriodTermination to `auto-renewal`.
+- For insuranceScope, prefer the explicit combined scope like `Povinné ručení a havarijní pojištění` when stated; otherwise use the document's `Rozsah pojištění`, otherwise return null.
 - State is usually accepted. Set state `draft` only when the document is clearly only a proposal or offer and is presented as such, for example `nabídka pojistné smlouvy`, `návrh pojistné smlouvy`, `návrh smlouvy`, `číslo návrhu`, or `nabídku můžete přijmout`.
 - Do not set state `draft` only because the document says the contract is concluded, confirmed, or becomes effective upon payment. Many valid contract documents still contain wording such as `pojistná smlouva bude uzavřena zaplacením pojistného`, `aby pojištění začalo platit, je potřeba zaplatit`, or `přesné datum a čas počátku pojištění vám potvrdíme po zaplacení`.
 - If the bundle is formatted as a contract, for example it uses wording like `pojistná smlouva`, has a `číslo smlouvy`, full contracting parties, coverage, premium recap, and no dominant proposal-only markers like `číslo návrhu`, prefer state `accepted` even if payment is still the mechanism that finalizes effectiveness.
