@@ -389,7 +389,9 @@ Business rules:
 - "doba neurčitá" means endAt must be null.
 - If OCR clearly refers to vehicle insurance, for example `pojištění vozidel`, `vozidlo`, `VIN`, `registrační značka`, or `osobní automobil`, set assetType to `vehicle`.
 - If the contract is `na dobu neurčitou` and there is no explicit wording that the policy terminates at the end of the insurance period, set actionOnInsurancePeriodTermination to `auto-renewal`.
-- State is usually accepted, unless the document is clearly only a proposal or offer, for example `nabídka pojistné smlouvy`, `návrh pojistné smlouvy`, `návrh smlouvy`, `nabídku můžete přijmout`, if similar wording isn't present, set state `accepted`.
+- State is usually accepted. Set state `draft` only when the document is clearly only a proposal or offer and is presented as such, for example `nabídka pojistné smlouvy`, `návrh pojistné smlouvy`, `návrh smlouvy`, `číslo návrhu`, or `nabídku můžete přijmout`.
+- Do not set state `draft` only because the document says the contract is concluded, confirmed, or becomes effective upon payment. Many valid contract documents still contain wording such as `pojistná smlouva bude uzavřena zaplacením pojistného`, `aby pojištění začalo platit, je potřeba zaplatit`, or `přesné datum a čas počátku pojištění vám potvrdíme po zaplacení`.
+- If the bundle is formatted as a contract, for example it uses wording like `pojistná smlouva`, has a `číslo smlouvy`, full contracting parties, coverage, premium recap, and no dominant proposal-only markers like `číslo návrhu`, prefer state `accepted` even if payment is still the mechanism that finalizes effectiveness.
 - Dates must use DD.MM.YYYY exactly.
 - premium.currency must be lowercase ISO-style like czk or eur.
 - premium.isCollection is true only if the documents explicitly state the broker collects the premium; otherwise return false.
