@@ -271,23 +271,6 @@ def solve(payload: dict):
     except Exception:
         logger.exception("Cache read failed for %s", cache_key)
 
-    def detect_endorsement_number(document: dict):
-        patterns = [
-            r"dodatek\s*(?:č\.?|cislo|číslo|c\.?)?\s*(\d+)",
-            r"endorsement\s*(?:no\.?|number)?\s*(\d+)",
-        ]
-        haystacks = [
-            document.get("filename") or "",
-            document.get("ocr_text") or "",
-        ]
-        for text in haystacks:
-            lowered = text.lower()
-            for pattern in patterns:
-                match = re.search(pattern, lowered, re.IGNORECASE)
-                if match:
-                    return match.group(1)
-        return None
-
     def build_nullable_schema(base_type: str):
         return {"type": [base_type, "null"]}
 
@@ -295,24 +278,15 @@ def solve(payload: dict):
         return {"type": ["string", "null"], "enum": values + [None]}
 
     structured_documents = []
-    endorsement_numbers = []
     for index, document in enumerate(documents, start=1):
-        endorsement_number = detect_endorsement_number(document)
-        if endorsement_number is not None:
-            endorsement_numbers.append(int(endorsement_number))
         structured_documents.append(
             {
                 "index": index,
                 "filename": document.get("filename"),
                 "pdf_url": document.get("pdf_url"),
-                "endorsementNumber": endorsement_number,
                 "ocrText": document.get("ocr_text") or "",
             }
         )
-
-    latest_endorsement_number = (
-        str(max(endorsement_numbers)) if endorsement_numbers else None
-    )
     expected_keys = [
         "contractNumber",
         "insurerName",
@@ -400,7 +374,7 @@ Business rules:
 - noticePeriod must be a lowercase hyphenated duration string, not natural language.
 - Examples for noticePeriod: "six-weeks", "two-months", "one-month", "eight-weeks".
 - Use only the allowed enum values from the schema.
-- latestEndorsementNumber should reflect the highest amendment number present in the documents; return null if there is no amendment.
+- Extract latestEndorsementNumber from the documents by finding the highest amendment/addendum number (for example `dodatek č. 1`, `dodatek 2`, `číslo dodatku 3`, or `endorsement no. 4`); return it as a string, or null if no amendment number appears.
 - For Renomia-style contracts, if the document supports the broker interpretation, use concludedAs="broker".
 - Do not invent values.
 
@@ -452,7 +426,6 @@ Document bundle:
         )
         raise HTTPException(status_code=502, detail="Gemini returned incomplete premium object")
 
-    parsed["latestEndorsementNumber"] = latest_endorsement_number
     try:
         conn = get_db()
         cur = conn.cursor()
