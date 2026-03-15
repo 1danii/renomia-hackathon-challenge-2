@@ -389,6 +389,7 @@ Business rules:
 - "doba neurčitá" means endAt must be null.
 - If OCR clearly refers to vehicle insurance, for example `pojištění vozidel`, `vozidlo`, `VIN`, `registrační značka`, or `osobní automobil`, set assetType to `vehicle`.
 - If the contract is `na dobu neurčitou` and there is no explicit wording that the policy terminates at the end of the insurance period, set actionOnInsurancePeriodTermination to `auto-renewal`.
+- State is usually accepted, unless the document is clearly only a proposal or offer, for example `nabídka pojistné smlouvy`, `návrh pojistné smlouvy`, `návrh smlouvy`, `nabídku můžete přijmout`, if similar wording isn't present, set state `accepted`.
 - Dates must use DD.MM.YYYY exactly.
 - premium.currency must be lowercase ISO-style like czk or eur.
 - premium.isCollection is true only if the documents explicitly state the broker collects the premium; otherwise return false.
